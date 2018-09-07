@@ -162,7 +162,7 @@ class HTTPAdapter(BaseAdapter):
         self.poolmanager = PoolManager(num_pools=connections, maxsize=maxsize,
                                        block=block, strict=True, **pool_kwargs)
 
-    def proxy_manager_for(self, proxy, **proxy_kwargs):
+    def proxy_manager_for(self, proxy, proxy_headers=None, **proxy_kwargs):
         """Return urllib3 ProxyManager for the given proxy.
 
         This method should not be called from user code, and is only
@@ -188,7 +188,8 @@ class HTTPAdapter(BaseAdapter):
                 **proxy_kwargs
             )
         else:
-            proxy_headers = self.proxy_headers(proxy)
+            if proxy_headers is None:
+                proxy_headers = self.proxy_headers(proxy)
             manager = self.proxy_manager[proxy] = proxy_from_url(
                 proxy,
                 proxy_headers=proxy_headers,
@@ -288,7 +289,7 @@ class HTTPAdapter(BaseAdapter):
 
         return response
 
-    def get_connection(self, url, proxies=None):
+    def get_connection(self, url, proxies=None, proxy_headers=None, proxy_auth_challenge_callback=None):
         """Returns a urllib3 connection for the given URL. This should not be
         called from user code, and is only exposed for use when subclassing the
         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
@@ -305,8 +306,9 @@ class HTTPAdapter(BaseAdapter):
             if not proxy_url.host:
                 raise InvalidProxyURL("Please check proxy URL. It is malformed"
                                       " and could be missing the host.")
-            proxy_manager = self.proxy_manager_for(proxy)
-            conn = proxy_manager.connection_from_url(url)
+            proxy_manager = self.proxy_manager_for(proxy, proxy_headers)
+            conn = proxy_manager.connection_from_url(
+                url, pool_kwargs={'proxy_auth_challenge_callback': proxy_auth_challenge_callback})
         else:
             # Only scheme should be lower case
             parsed = urlparse(url)
@@ -390,7 +392,7 @@ class HTTPAdapter(BaseAdapter):
 
         return headers
 
-    def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
+    def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None, auth=None):
         """Sends PreparedRequest object. Returns Response object.
 
         :param request: The :class:`PreparedRequest <PreparedRequest>` being sent.
@@ -407,8 +409,12 @@ class HTTPAdapter(BaseAdapter):
         :rtype: requests.Response
         """
 
-        conn = self.get_connection(request.url, proxies)
+        proxy_headers = None
+        if 'Proxy-Authorization' in request.headers:
+            proxy_headers = {'Proxy-Authorization': request.headers['Proxy-Authorization'],
+                             'Proxy-Connection': 'Keep-Alive'}
 
+        conn = self.get_connection(request.url, proxies, proxy_headers, getattr(auth, 'callback', None))
         self.cert_verify(conn, request.url, verify, cert)
         url = self.request_url(request, proxies)
         self.add_headers(request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=proxies)
